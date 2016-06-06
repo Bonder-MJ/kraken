@@ -1,3 +1,6 @@
 /src/calculateNormalizationFactor/nbproject/private/
 /src/calculateNormalizationFactor/build/
 /src/KrakenGenomeSizeNormalization/target/
+*.db
+*.xml
+src/KrakenGenomeSizeNormalization/nbactions.xml

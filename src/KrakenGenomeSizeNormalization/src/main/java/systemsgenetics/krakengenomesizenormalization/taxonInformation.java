@@ -23,6 +23,7 @@ public class taxonInformation {
         }
         this.Id = Integer.parseInt(Id);
         this.averageGenomeSize = new Mean();
+        
     }
     
     public Integer getParentId() {

@@ -6,15 +6,14 @@
 package systemsgenetics.krakengenomesizenormalization;
 
 import gnu.trove.map.TIntObjectMap;
+import gnu.trove.map.hash.TIntIntHashMap;
 import gnu.trove.map.hash.TIntObjectHashMap;
-import gnu.trove.map.hash.TObjectIntHashMap;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.HashSet;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
@@ -24,7 +23,9 @@ import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.OptionBuilder;
+
 import org.apache.commons.cli.Options;
+import org.apache.commons.lang3.math.NumberUtils;
 
 /**
  *
@@ -35,6 +36,7 @@ public class CalculateNormalizationFactor {
     static final Pattern TAB_PATTERN = Pattern.compile("\\t");
     static final Pattern NCBI_PATTERN = Pattern.compile("\\t\\|\\t");
     static final Pattern PIPE_PATTERN = Pattern.compile("\\|");
+    static final Pattern SPACE_PATTERN = Pattern.compile("\\s");
 
     /**
      * @param args the command line arguments
@@ -100,16 +102,10 @@ public class CalculateNormalizationFactor {
             }
             fastaMode = cmd.hasOption("f");
             fastaMode2 = cmd.hasOption("f2");
-            if ((fastaMode ^ fastaMode2) && (ncbiGiToTaxId == null || referenceFiles.length > 1)) {
-                if(fastaMode2 && secondReferenceFiles!=null){
+            if ((fastaMode || fastaMode2) && ncbiGiToTaxId == null) {
                     System.out.println("Check input requirements, either missing file to link gi to taxId or trying to use multiple folders for fasta parsing.");
                     formatter.printHelp("ant", options);
                     System.exit(0);
-                } else {
-                    System.out.println("Check input requirements, either missing file to link gi to taxId or trying to use multiple folders for fasta parsing.");
-                    formatter.printHelp("ant", options);
-                    System.exit(0);
-                }
             }
 
         } catch (org.apache.commons.cli.ParseException ex) {
@@ -128,7 +124,7 @@ public class CalculateNormalizationFactor {
                 System.out.println("Loaded: " + referenceFiles.length + " files with taxonomy sizes");
             }
         } else if(fastaMode) {
-            readFastaAndCalculteGenomeSizeInformation(referenceFiles, ncbiGiToTaxIdFile, taxInfo);
+            readFastaAndCalculteGenomeSizeInformation(referenceFiles, ncbiGiToTaxIdFile, taxInfo, false);
             if (secondReferenceFiles != null) {
                 addSecondGenomeSizeInformation(secondReferenceFiles, taxInfo);
                 System.out.println("Loaded sizes from fasta files, and NCBI information files.");
@@ -137,7 +133,7 @@ public class CalculateNormalizationFactor {
             }
         } else {
             readGenomeSizeInformation(referenceFiles, taxInfo);
-            readSecondFastaAndCalculteGenomeSizeInformation(secondReferenceFiles, ncbiGiToTaxIdFile, taxInfo);
+            readFastaAndCalculteGenomeSizeInformation(secondReferenceFiles, ncbiGiToTaxIdFile, taxInfo, true);
             System.out.println("Loaded sizes from fasta files, and NCBI information files.");
         }
 
@@ -249,64 +245,115 @@ public class CalculateNormalizationFactor {
         }
     }
 
-    private static void readFastaAndCalculteGenomeSizeInformation(String[] referenceFiles, File ncbiGiToTaxIdFile, TIntObjectHashMap<taxonInformation> taxInfo) {
-        TObjectIntHashMap<String> tempMap = new TObjectIntHashMap<String>();
+    private static void readFastaAndCalculteGenomeSizeInformation(String[] referenceFiles, File ncbiGiToTaxIdFile, TIntObjectHashMap<taxonInformation> taxInfo, boolean onlyAddNew) {
+        
+        TIntIntHashMap GiToTaxMap = new TIntIntHashMap();
+                
+        System.out.println("Reading in Gi to TaxId");
+        try {
+            BufferedReader r = new BufferedReader(new FileReader(ncbiGiToTaxIdFile.getAbsolutePath()));
+            String row;
+            while ((row = r.readLine()) != null) {
+                String[] parts = TAB_PATTERN.split(row);
+                GiToTaxMap.put(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+            }
+            r.close();
+        } catch (Exception ex) {
+            Logger.getLogger(CalculateNormalizationFactor.class.getName()).log(Level.SEVERE, null, ex);
+        }
+        System.out.println("\tDone.");
+        
         File folder = new File(referenceFiles[0]);
         System.out.print("\tNumber of fastas to read: "+folder.listFiles().length);
+        int AddedGis = 0;
         for (File fileInFolder : folder.listFiles()) {
             try {
                 BufferedReader r = new BufferedReader(new FileReader(fileInFolder.getAbsolutePath()));
                 String row;
                 String fastaHeader = null;
                 StringBuilder body = new StringBuilder();
+                boolean alreadyTax = false;
                 while ((row = r.readLine()) != null) {
                     if (row.startsWith(">")) {
-                        if(body.length()!=0){
-                            tempMap.put(fastaHeader, body.length());
+                        alreadyTax = false;
+                        Integer oldHeader = null;
+                        Boolean oldTax = null;
+                        
+                        if(fastaHeader != null){
+                            oldHeader = Integer.parseInt(fastaHeader);
+                            oldTax = alreadyTax;
+                        }
+//                        System.out.println(row);
+                        fastaHeader = PIPE_PATTERN.split(row)[1];
+                        if(!NumberUtils.isNumber(fastaHeader)){
+                            fastaHeader = SPACE_PATTERN.split(PIPE_PATTERN.split(row)[2])[0];
+//                            if(!NumberUtils.isNumber(fastaHeader)){
+//                                System.out.println("Arnau, we made a mistake, header is:");
+//                                System.out.println(row+"\n");
+//                                System.exit(0);
+//                            }
+                            alreadyTax = true;
+                        }
+//                        System.out.println("\t"+fastaHeader+" "+alreadyTax);
+                        if(oldHeader!=null && oldHeader!=Integer.parseInt(fastaHeader) && body.length()!=0){
+//                            System.out.println("Old header: "+oldHeader);
+                            if(!oldTax){
+                                oldHeader = GiToTaxMap.get(oldHeader);
+                            }
+                            if(onlyAddNew){
+                                if(taxInfo.containsKey(oldHeader) && taxInfo.get(oldHeader).getAverageGenomeSize().isNaN()){
+                                    AddedGis++;
+                                    while(oldHeader!=null){
+                                        oldHeader = taxInfo.get(oldHeader).insertAverageGenomeSizeRecursive(body.length());
+                                    }
+                                }
+                            } else {
+                                if(taxInfo.containsKey(oldHeader)){
+                                    AddedGis++;
+                                    while(oldHeader!=null){
+                                        oldHeader = taxInfo.get(oldHeader).insertAverageGenomeSizeRecursive(body.length());
+                                    }
+                                }
+                            }
                             body = new StringBuilder();
                         }
-                        fastaHeader = PIPE_PATTERN.split(row)[1];
+                        
                     } else {
                         body.append(row);
                     }
                 }
+//                System.out.println("New header: "+fastaHeader);
                 //Process
-                tempMap.put(fastaHeader, body.length());
+                Integer id;
+                if(!alreadyTax){
+                    id = GiToTaxMap.get(Integer.parseInt(fastaHeader));
+                } else {
+                    id = Integer.parseInt(fastaHeader);
+                }
+
+                if(onlyAddNew){
+                    if(taxInfo.containsKey(id) && taxInfo.get(id).getAverageGenomeSize().isNaN()){
+                        AddedGis++;
+                        while(id!=null){
+                            id = taxInfo.get(id).insertAverageGenomeSizeRecursive(body.length());
+                        }
+                    }
+                } else {
+                    if(taxInfo.containsKey(id)){
+                        AddedGis++;
+                        while(id!=null){
+                            id = taxInfo.get(id).insertAverageGenomeSizeRecursive(body.length());
+                        }
+                    }
+                }
                 
                 r.close();
             } catch (Exception ex) {
                 Logger.getLogger(CalculateNormalizationFactor.class.getName()).log(Level.SEVERE, null, ex);
             }
         }
-        System.out.print("\tDone. \n\t Matching GI numbers to TaxIds now.");
-        HashSet<String> visited = new HashSet<>();
-        boolean done = false;
-        try {
-            BufferedReader r = new BufferedReader(new FileReader(ncbiGiToTaxIdFile.getAbsolutePath()));
-            String row;
-            while ((row = r.readLine()) != null && !done) {
-                String[] parts = TAB_PATTERN.split(row);
-                if(!visited.contains(parts[0]) && tempMap.keySet().contains(parts[0])){
-                    Integer id = Integer.parseInt(parts[1]);
-                    if(taxInfo.containsKey(id)){
-                        while(id!=null){
-                            id = taxInfo.get(id).insertAverageGenomeSizeRecursive(tempMap.get(parts[0]));
-                        }
-                    }
-                    visited.add(parts[0]);
-                    if(visited.size() == tempMap.size()){
-                        done = true;
-                    }
-                }
-                
-            }
-            r.close();
-        } catch (Exception ex) {
-            Logger.getLogger(CalculateNormalizationFactor.class.getName()).log(Level.SEVERE, null, ex);
-        }
-        
         System.out.println("\tDone.");
-
+        System.out.println("Added GI's: " + AddedGis);
     }
 
     private static void addSecondGenomeSizeInformation(String[] referenceFiles, TIntObjectMap<taxonInformation> taxInfo) {
@@ -387,66 +434,6 @@ public class CalculateNormalizationFactor {
                 System.exit(0);
             }
         }
-
-    }
-
-    private static void readSecondFastaAndCalculteGenomeSizeInformation(String[] referenceFiles, File ncbiGiToTaxIdFile, TIntObjectHashMap<taxonInformation> taxInfo) {
-        TObjectIntHashMap<String> tempMap = new TObjectIntHashMap<String>();
-        File folder = new File(referenceFiles[0]);
-        System.out.print("\tNumber of fastas to read: "+folder.listFiles().length);
-        for (File fileInFolder : folder.listFiles()) {
-            try {
-                BufferedReader r = new BufferedReader(new FileReader(fileInFolder.getAbsolutePath()));
-                String row;
-                String fastaHeader = null;
-                StringBuilder body = new StringBuilder();
-                while ((row = r.readLine()) != null) {
-                    if (row.startsWith(">")) {
-                        if(body.length()!=0){
-                            tempMap.put(fastaHeader, body.length());
-                            body = new StringBuilder();
-                        }
-                        fastaHeader = PIPE_PATTERN.split(row)[1];
-                    } else {
-                        body.append(row);
-                    }
-                }
-                //Process
-                tempMap.put(fastaHeader, body.length());
-                
-                r.close();
-            } catch (Exception ex) {
-                Logger.getLogger(CalculateNormalizationFactor.class.getName()).log(Level.SEVERE, null, ex);
-            }
-        }
-        System.out.print("\tDone. \n\t Matching GI numbers to TaxIds now.");
-        HashSet<String> visited = new HashSet<>();
-        boolean done = false;
-        try {
-            BufferedReader r = new BufferedReader(new FileReader(ncbiGiToTaxIdFile.getAbsolutePath()));
-            String row;
-            while ((row = r.readLine()) != null && !done) {
-                String[] parts = TAB_PATTERN.split(row);
-                if(!visited.contains(parts[0]) && tempMap.keySet().contains(parts[0])){
-                    Integer id = Integer.parseInt(parts[1]);
-                    if(taxInfo.containsKey(id) && taxInfo.get(id).getAverageGenomeSize().isNaN()){
-                        while(id!=null){
-                            id = taxInfo.get(id).insertAverageGenomeSizeRecursive(tempMap.get(parts[0]));
-                        }
-                    }
-                    visited.add(parts[0]);
-                    if(visited.size() == tempMap.size()){
-                        done = true;
-                    }
-                }
-                
-            }
-            r.close();
-        } catch (Exception ex) {
-            Logger.getLogger(CalculateNormalizationFactor.class.getName()).log(Level.SEVERE, null, ex);
-        }
-        
-        System.out.println("\tDone.");
 
     }
     
